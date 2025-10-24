@@ -123,7 +123,7 @@ def init_distributed() -> Tuple[int, int, torch.device]:
 def build_datasets(data_dir: Path) -> Tuple[Dataset, Dataset, Dataset]:
     train_transform = transforms.Compose(
         [
-            transforms.Resize(256),
+            transforms.Resize(256, antialias=True),
             transforms.RandomCrop(224),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
@@ -132,7 +132,7 @@ def build_datasets(data_dir: Path) -> Tuple[Dataset, Dataset, Dataset]:
     )
     eval_transform = transforms.Compose(
         [
-            transforms.Resize(256),
+            transforms.Resize(256, antialias=True),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
@@ -145,12 +145,13 @@ def build_datasets(data_dir: Path) -> Tuple[Dataset, Dataset, Dataset]:
     if dist.is_initialized():
         dist.barrier()
 
-    train_full = datasets.CIFAR10(root=data_dir, train=True, download=False, transform=train_transform)
+    train_full = datasets.CIFAR10(root=data_dir, train=True, download=False, transform=None)
     val_size = 5000
     train_size = len(train_full) - val_size
     generator = torch.Generator().manual_seed(0)
-    train_dataset, val_dataset = torch.utils.data.random_split(train_full, [train_size, val_size], generator=generator)
-    val_dataset = _wrap_dataset_with_transform(val_dataset, eval_transform)
+    train_subset, val_subset = torch.utils.data.random_split(train_full, [train_size, val_size], generator=generator)
+    train_dataset = _wrap_dataset_with_transform(train_subset, train_transform)
+    val_dataset = _wrap_dataset_with_transform(val_subset, eval_transform)
     test_dataset = datasets.CIFAR10(root=data_dir, train=False, download=False, transform=eval_transform)
     return train_dataset, val_dataset, test_dataset
 
