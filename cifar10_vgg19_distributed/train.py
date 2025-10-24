@@ -475,6 +475,13 @@ def main() -> None:
             )
             val_stats = evaluate(model, val_loader, criterion, device, args.amp)
 
+            if is_main_process():
+                print(
+                    "Validation Epoch "
+                    f"{epoch:03d}: Loss {val_stats.loss:.4f} "
+                    f"Acc {val_stats.accuracy:.4f} Throughput {val_stats.throughput:.1f} img/s"
+                )
+
             log_metrics(writer, csv_writer, epoch, "train", train_stats)
             log_metrics(writer, csv_writer, epoch, "val", val_stats)
 
