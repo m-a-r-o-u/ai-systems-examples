@@ -68,6 +68,15 @@ def parse_args() -> argparse.Namespace:
         help="Force cuDNN deterministic convolution (slower but reproducible). If not set, cuDNN benchmark is enabled.",
     )
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers per process")
+    parser.add_argument(
+        "--omp-num-threads",
+        type=int,
+        default=None,
+        help=(
+            "Number of OpenMP threads to use per process. If not provided, the script will "
+            "derive a value based on the CPU cores available and the local world size."
+        ),
+    )
     parser.add_argument("--resume", type=Path, default=None, help="Path to a checkpoint to resume from")
     parser.add_argument("--save-frequency", type=int, default=0, help="Save a numbered checkpoint every N epochs (0 disables)")
     parser.add_argument("--log-frequency", type=int, default=10, help="How often (in steps) to log training progress")
@@ -118,6 +127,39 @@ def init_distributed() -> Tuple[int, int, torch.device]:
     device = torch.device("cuda", local_rank)
     torch.cuda.set_device(device)
     return rank, world_size, device
+
+
+def configure_threading(requested_threads: int | None, world_size: int) -> int:
+    """Set torch/OMP threading to avoid torchrun warnings and improve performance."""
+
+    cpu_count = os.cpu_count() or 1
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", world_size))
+    if local_world_size <= 0:
+        local_world_size = world_size or 1
+
+    if requested_threads is not None and requested_threads <= 0:
+        raise ValueError("--omp-num-threads must be a positive integer if specified")
+
+    target_threads = requested_threads or max(1, cpu_count // max(1, local_world_size))
+    env_threads = os.environ.get("OMP_NUM_THREADS")
+
+    if env_threads != str(target_threads):
+        os.environ["OMP_NUM_THREADS"] = str(target_threads)
+
+    torch.set_num_threads(target_threads)
+    try:
+        torch.set_num_interop_threads(min(target_threads, cpu_count))
+    except RuntimeError:
+        # Some backends (e.g., older PyTorch builds) may not support changing interop threads.
+        pass
+
+    if is_main_process():
+        print(
+            "Configured OMP_NUM_THREADS=%s (cpu_count=%s, local_world_size=%s)"
+            % (target_threads, cpu_count, local_world_size)
+        )
+
+    return target_threads
 
 
 def build_datasets(data_dir: Path) -> Tuple[Dataset, Dataset, Dataset]:
@@ -441,6 +483,8 @@ def log_metrics(
 def main() -> None:
     args = parse_args()
     rank, world_size, device = init_distributed()
+
+    configure_threading(args.omp_num_threads, world_size)
 
     if args.global_batch_size % world_size != 0:
         raise ValueError(
