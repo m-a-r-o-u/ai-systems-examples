@@ -241,8 +241,10 @@ def train_one_epoch(
     epoch_start = time.time()
     last_log_time = epoch_start
     last_log_step = 0
+    step_time_accumulator = 0.0
 
     for step, (images, targets) in enumerate(loader, start=1):
+        step_start = time.time()
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
@@ -262,22 +264,35 @@ def train_one_epoch(
         running_correct += batch_acc.item()
         num_batches += 1
 
+        step_duration = time.time() - step_start
+        step_time_accumulator += step_duration
+
         if is_main_process() and (step % log_frequency == 0 or step == len(loader)):
             now = time.time()
             steps_since_log = step - last_log_step
             throughput = loader.batch_size * get_world_size() * steps_since_log / max(now - last_log_time, 1e-9)
+            avg_step_time = step_time_accumulator / max(steps_since_log, 1)
             print(
                 f"Epoch {epoch:03d} Step {step:04d}/{len(loader):04d} "
                 f"Loss {batch_loss.item():.4f} Acc {batch_acc.item():.4f} "
-                f"Throughput {throughput:.1f} img/s"
+                f"Throughput {throughput:.1f} img/s "
+                f"StepTime {step_duration:.3f}s AvgStepTime {avg_step_time:.3f}s "
+                f"EpochTime {now - epoch_start:.1f}s"
             )
             last_log_time = now
             last_log_step = step
+            step_time_accumulator = 0.0
 
     epoch_loss = running_loss / max(num_batches, 1)
     epoch_acc = running_correct / max(num_batches, 1)
     epoch_time = time.time() - epoch_start
     samples_per_sec = loader.batch_size * get_world_size() * num_batches / max(epoch_time, 1e-9)
+    if is_main_process():
+        avg_step_time = epoch_time / max(num_batches, 1)
+        print(
+            f"Epoch {epoch:03d} completed in {epoch_time:.2f}s "
+            f"({num_batches} steps, avg {avg_step_time:.3f}s/step)"
+        )
     return EpochStats(loss=epoch_loss, accuracy=epoch_acc, throughput=samples_per_sec)
 
 
