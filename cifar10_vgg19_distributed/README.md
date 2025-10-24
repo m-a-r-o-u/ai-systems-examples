@@ -48,6 +48,7 @@ torchrun --nproc_per_node=4 cifar10_vgg19_distributed/train.py \
 * `torchrun` automatically populates `RANK`, `LOCAL_RANK`, and `WORLD_SIZE`. The script refuses to run without them to catch accidental `python train.py` executions.
 * The **global** batch size (256 by default) is split across ranks. For example, 4 GPUs → 64 images per GPU. The learning rate follows the linear scaling rule: `actual_lr = base_lr * (global_batch / 256)`.
 * Increase `--num-workers` to match available CPU cores; 4–8 workers per GPU is a common sweet spot.
+* Tune CPU affinity by passing `--omp-num-threads` if the automatic choice (CPU cores ÷ local world size) does not match your job layout.
 * Disable AMP for debugging with `--no-amp`.
 
 ### Example Slurm snippet
@@ -134,3 +135,14 @@ The script restores the epoch counter, optimizer, and AMP scaler. Training autom
 * **Slow data loading** – increase `--num-workers` or move `--data-dir` to a local SSD on each node.
 
 For deeper experimentation, the code is organized to be easily extended: helper functions are pure and unit-test friendly, and all configuration surfaces through the CLI for shell scripting.
+
+### Eliminating `OMP_NUM_THREADS` warnings
+
+`torchrun` prints a warning and forces `OMP_NUM_THREADS=1` when the variable is unset. The training script now computes a sensible default (CPU cores ÷ local world size) on startup so runs launched with `--nproc_per_node` no longer inherit the slow default. You can override the heuristic explicitly:
+
+```bash
+torchrun --nproc_per_node=2 cifar10_vgg19_distributed/train.py \
+  --omp-num-threads 8
+```
+
+Setting the flag (or exporting `OMP_NUM_THREADS` yourself) suppresses the launcher warning while keeping data loading responsive.
