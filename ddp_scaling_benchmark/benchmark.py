@@ -19,6 +19,7 @@ class BenchmarkConfig:
     warmup_steps: int
     input_dim: int
     hidden_dim: int
+    num_layers: int
     output_dim: int
     backend: str
     device: str
@@ -40,6 +41,12 @@ def parse_args() -> BenchmarkConfig:
     )
     parser.add_argument("--input-dim", type=int, default=4096, help="Input feature dimension")
     parser.add_argument("--hidden-dim", type=int, default=4096, help="Hidden layer dimension")
+    parser.add_argument(
+        "--num-layers",
+        type=int,
+        default=3,
+        help="Number of hidden layers (Linear + ReLU blocks) before the output layer",
+    )
     parser.add_argument("--output-dim", type=int, default=2048, help="Output dimension")
     parser.add_argument(
         "--backend",
@@ -78,6 +85,8 @@ def parse_args() -> BenchmarkConfig:
     )
     parser.set_defaults(static_graph=True)
     args = parser.parse_args()
+    if args.num_layers < 0:
+        parser.error("--num-layers must be non-negative")
     config = BenchmarkConfig(
         batch_size=args.batch_size,
         steps_per_epoch=args.steps_per_epoch,
@@ -85,6 +94,7 @@ def parse_args() -> BenchmarkConfig:
         warmup_steps=args.warmup_steps,
         input_dim=args.input_dim,
         hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
         output_dim=args.output_dim,
         backend=args.backend,
         device=args.device if args.device is not None else "auto",
@@ -147,15 +157,17 @@ def barrier_if_distributed(distributed: bool) -> None:
 
 
 def build_model(config: BenchmarkConfig, device: torch.device) -> torch.nn.Module:
-    model = torch.nn.Sequential(
-        torch.nn.Linear(config.input_dim, config.hidden_dim),
-        torch.nn.ReLU(),
-        torch.nn.Linear(config.hidden_dim, config.hidden_dim),
-        torch.nn.ReLU(),
-        torch.nn.Linear(config.hidden_dim, config.hidden_dim),
-        torch.nn.ReLU(),
-        torch.nn.Linear(config.hidden_dim, config.output_dim),
-    )
+    layers: List[torch.nn.Module] = []
+    in_features = config.input_dim
+
+    for _ in range(config.num_layers):
+        layers.append(torch.nn.Linear(in_features, config.hidden_dim))
+        layers.append(torch.nn.ReLU())
+        in_features = config.hidden_dim
+
+    layers.append(torch.nn.Linear(in_features, config.output_dim))
+
+    model = torch.nn.Sequential(*layers)
     return model.to(device)
 
 
