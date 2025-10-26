@@ -29,7 +29,7 @@ class BenchmarkConfig:
 
 def parse_args() -> BenchmarkConfig:
     parser = argparse.ArgumentParser(description="DDP scaling benchmark with synthetic data")
-    parser.add_argument("--batch-size", type=int, default=2048, help="Per-GPU batch size")
+    parser.add_argument("--batch-size", type=int, default=256, help="Per-GPU batch size")
     parser.add_argument("--steps-per-epoch", type=int, default=20, help="Number of training steps per epoch")
     parser.add_argument("--epochs", type=int, default=5, help="Number of epochs to run")
     parser.add_argument(
@@ -149,6 +149,8 @@ def barrier_if_distributed(distributed: bool) -> None:
 def build_model(config: BenchmarkConfig, device: torch.device) -> torch.nn.Module:
     model = torch.nn.Sequential(
         torch.nn.Linear(config.input_dim, config.hidden_dim),
+        torch.nn.ReLU(),
+        torch.nn.Linear(config.hidden_dim, config.hidden_dim),
         torch.nn.ReLU(),
         torch.nn.Linear(config.hidden_dim, config.hidden_dim),
         torch.nn.ReLU(),
