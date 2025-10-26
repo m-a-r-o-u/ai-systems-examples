@@ -4,7 +4,7 @@ import argparse
 import os
 import time
 from dataclasses import asdict, dataclass
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 import torch.distributed as dist
@@ -22,11 +22,14 @@ class BenchmarkConfig:
     output_dim: int
     backend: str
     device: str
+    bucket_cap_mb: int
+    broadcast_buffers: bool
+    static_graph: bool
 
 
 def parse_args() -> BenchmarkConfig:
     parser = argparse.ArgumentParser(description="DDP scaling benchmark with synthetic data")
-    parser.add_argument("--batch-size", type=int, default=512, help="Per-GPU batch size")
+    parser.add_argument("--batch-size", type=int, default=2048, help="Per-GPU batch size")
     parser.add_argument("--steps-per-epoch", type=int, default=20, help="Number of training steps per epoch")
     parser.add_argument("--epochs", type=int, default=5, help="Number of epochs to run")
     parser.add_argument(
@@ -36,8 +39,8 @@ def parse_args() -> BenchmarkConfig:
         help="Number of initial steps to exclude from timing measurements",
     )
     parser.add_argument("--input-dim", type=int, default=4096, help="Input feature dimension")
-    parser.add_argument("--hidden-dim", type=int, default=2048, help="Hidden layer dimension")
-    parser.add_argument("--output-dim", type=int, default=1024, help="Output dimension")
+    parser.add_argument("--hidden-dim", type=int, default=4096, help="Hidden layer dimension")
+    parser.add_argument("--output-dim", type=int, default=2048, help="Output dimension")
     parser.add_argument(
         "--backend",
         type=str,
@@ -50,6 +53,30 @@ def parse_args() -> BenchmarkConfig:
         default=None,
         help="Device override (e.g., cuda:0, cuda, or cpu). Defaults to local GPU if available.",
     )
+    parser.add_argument(
+        "--bucket-cap-mb",
+        type=int,
+        default=50,
+        help="DDP gradient bucket size in megabytes. Increase to reduce all-reduce calls.",
+    )
+    parser.add_argument(
+        "--broadcast-buffers",
+        action="store_true",
+        help="Enable broadcasting of model buffers. Disabled by default for the synthetic benchmark.",
+    )
+    parser.add_argument(
+        "--static-graph",
+        dest="static_graph",
+        action="store_true",
+        help="Set DDP static_graph=True when the model graph is static (default).",
+    )
+    parser.add_argument(
+        "--no-static-graph",
+        dest="static_graph",
+        action="store_false",
+        help="Disable DDP static graph optimizations.",
+    )
+    parser.set_defaults(static_graph=True)
     args = parser.parse_args()
     config = BenchmarkConfig(
         batch_size=args.batch_size,
@@ -61,6 +88,9 @@ def parse_args() -> BenchmarkConfig:
         output_dim=args.output_dim,
         backend=args.backend,
         device=args.device if args.device is not None else "auto",
+        bucket_cap_mb=args.bucket_cap_mb,
+        broadcast_buffers=args.broadcast_buffers,
+        static_graph=args.static_graph,
     )
     return config
 
@@ -85,10 +115,30 @@ def setup_distributed(backend: str) -> Tuple[int, int, int, bool]:
 
 def select_device(config: BenchmarkConfig, local_rank: int) -> torch.device:
     if config.device != "auto":
-        return torch.device(config.device)
+        device = torch.device(config.device)
+        if device.type == "cuda" and device.index is None and torch.cuda.is_available():
+            # Force the local rank mapping when the override omits an index.
+            return torch.device(f"cuda:{local_rank}")
+        return device
     if torch.cuda.is_available():
         return torch.device(f"cuda:{local_rank}")
     return torch.device("cpu")
+
+
+def log_rank_device_info(rank: int, local_rank: int, device: torch.device) -> None:
+    visible = os.getenv("CUDA_VISIBLE_DEVICES", "<not set>")
+    if device.type == "cuda":
+        current_device = torch.cuda.current_device()
+        name = torch.cuda.get_device_name(current_device)
+        print(
+            f"[Rank {rank}] CUDA_VISIBLE_DEVICES={visible}, LOCAL_RANK={local_rank}, "
+            f"current_device=cuda:{current_device}, name={name}"
+        )
+    else:
+        print(
+            f"[Rank {rank}] CUDA_VISIBLE_DEVICES={visible}, LOCAL_RANK={local_rank}, "
+            f"device={device}"
+        )
 
 
 def barrier_if_distributed(distributed: bool) -> None:
@@ -128,14 +178,28 @@ def train(config: BenchmarkConfig) -> None:
     device = select_device(config, local_rank)
 
     if device.type == "cuda":
-        torch.cuda.set_device(device)
+        cuda_index = device.index if device.index is not None else local_rank
+        torch.cuda.set_device(cuda_index)
         torch.backends.cudnn.benchmark = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
+        device = torch.device(f"cuda:{torch.cuda.current_device()}")
+
+    log_rank_device_info(rank, local_rank, device)
 
     torch.manual_seed(42)
 
     model = build_model(config, device)
     if distributed:
-        model = DDP(model, device_ids=[device.index] if device.type == "cuda" else None)
+        ddp_kwargs: Dict[str, object] = dict(
+            bucket_cap_mb=config.bucket_cap_mb,
+            broadcast_buffers=config.broadcast_buffers,
+            gradient_as_bucket_view=True,
+            static_graph=config.static_graph,
+        )
+        if device.type == "cuda":
+            ddp_kwargs.update(device_ids=[device.index], output_device=device.index)
+        model = DDP(model, **ddp_kwargs)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     loss_fn = torch.nn.MSELoss()
