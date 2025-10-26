@@ -54,6 +54,10 @@ Measured samples : 140,800
 
 Compare the reported throughput across different `--nproc_per_node` values to understand how well the workload scales with additional GPUs.
 
+## Experiment report
+
+See [EXPERIMENTS.md](EXPERIMENTS.md) for detailed measurements, interpretations, and suggested follow-up improvements from the latest DDP scaling studies.
+
 ## Scaling tips
 
 - The default configuration increases the per-rank batch size and model width so that each step spends ~15–30 ms in compute before communication. This yields more reliable scaling measurements than the tiny default model.
