@@ -18,7 +18,7 @@ Install PyTorch with GPU support that matches your system. Then run:
 python benchmark.py --epochs 1 --steps-per-epoch 10 --warmup-steps 2
 
 # Multi-GPU on a single node
-CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 benchmark.py --epochs 3 --steps-per-epoch 20 --warmup-steps 5
+torchrun --nproc_per_node=2 benchmark.py --epochs 3 --steps-per-epoch 20 --warmup-steps 5
 ```
 
 You can also pass the same arguments through `python -m torch.distributed.run` if preferred.
