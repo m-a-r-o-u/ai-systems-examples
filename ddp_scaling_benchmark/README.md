@@ -60,3 +60,4 @@ Compare the reported throughput across different `--nproc_per_node` values to un
 - Use `--bucket-cap-mb` to increase the DDP gradient bucket size (50 MB by default) when the model contains many small tensors.
 - `--broadcast-buffers` is disabled by default to avoid redundant synchronisation of random buffers in this synthetic workload. Enable it if your model relies on buffer state (e.g. BatchNorm running stats).
 - The script enables `static_graph=True` and `gradient_as_bucket_view=True` for DDP. Disable static graph optimisations with `--no-static-graph` when the model structure changes across iterations.
+- Adjust model size with `--hidden-dim` and explore deeper or shallower networks with `--num-layers` to evaluate how computation-heavy workloads scale.
