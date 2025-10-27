@@ -68,6 +68,7 @@ torchrun --nproc_per_node=1 cifar10_vgg19_distributed/train.py --data-dir ./data
 #SBATCH --partition=lrz-dgx-a100-80x8
 #SBATCH --job-name=cifar10-vgg19
 #SBATCH --gres=gpu:1                  # Change manually when using more GPUs
+#SBATCH --ntasks-per-node=1           # Change manually when using more GPUs
 #SBATCH --time=01:00:00
 #SBATCH --output=log_%j.log
 
