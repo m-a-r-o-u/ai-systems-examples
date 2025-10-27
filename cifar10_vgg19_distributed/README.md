@@ -1,17 +1,21 @@
 # Distributed CIFAR-10 + VGG19 Training Example
 
-This example demonstrates a production-ready workflow for training VGG19 on CIFAR-10 with PyTorch, `torchrun`, and multi-GPU DistributedDataParallel (DDP). The goal is to provide an educational baseline that can be referenced in HPC documentation and easily adapted to Slurm, PBS, or other schedulers.
+This example demonstrates a practical workflow for training VGG19 on CIFAR-10 with PyTorch, `torchrun`, and multi-GPU DistributedDataParallel (DDP). The goal is to provide an educational baseline that can be referenced in HPC documentation and easily adapted to Slurm job scripts.
+
+## Background
+
+VGG19 is a classic convolutional neural network (CNN) architecture introduced in 2014 that stacks many small 3×3 filters to build deep feature hierarchies. You can read the original paper on the [Very Deep Convolutional Networks for Large-Scale Image Recognition](https://arxiv.org/abs/1409.1556) for historical context. CIFAR-10 is a widely used dataset of 60,000 tiny 32×32 color images across ten categories that dates back to 2009 and remains a standard educational benchmark. CNN-based image classification workloads like this have been a mainstay in the deep learning community for over a decade, making them ideal for demonstrating distributed training fundamentals before moving on to more modern models.
 
 ## Key features
 
-* **`torchrun` orchestration** – no `mp.spawn`; launches integrate cleanly with Slurm and other MPI-style runners.
-* **Rank-aware I/O** – rank 0 handles dataset downloads, checkpointing, CSV metrics, and TensorBoard logging to avoid races on shared filesystems.
-* **Pretrained VGG19** – loads ImageNet weights, replaces the classifier head, and resizes CIFAR-10 inputs to 224×224 with ImageNet normalization for fast convergence.
-* **Automatic mixed precision (AMP)** – enabled by default with a `--no-amp` flag for debugging.
-* **Deterministic seeding** – consistent seeds across Python, NumPy, and PyTorch with explicit cuDNN notes.
-* **Clear batch-size semantics** – CLI uses the **global** batch size (`per_gpu * world_size`); the learning rate scales linearly with that value.
-* **CSV & TensorBoard metrics** – short, grep-friendly logs plus structured artifacts for post-run analysis.
-* **Checkpointing & resume** – latest, best, and optional per-epoch checkpoints with a `--resume` flag that broadcasts weights to all ranks.
+* **`torchrun` orchestration** – single launcher that plays nicely with Slurm.
+* **Rank-aware I/O** – main rank owns downloads, checkpoints, and logs.
+* **Pretrained VGG19** – ImageNet weights with a CIFAR-10 head and resizing pipeline.
+* **Automatic mixed precision (AMP)** – enabled by default, toggle with `--no-amp`.
+* **Deterministic seeding** – aligned Python/NumPy/PyTorch seeds with cuDNN notes.
+* **Clear batch-size semantics** – CLI accepts global batch size; LR scales linearly.
+* **CSV & TensorBoard metrics** – quick console summaries plus structured artifacts.
+* **Checkpointing & resume** – latest/best snapshots and broadcasted restarts.
 
 ## Repository layout
 
@@ -26,7 +30,7 @@ Artifacts (checkpoints, CSV, TensorBoard logs) are written to `./artifacts` by d
 
 ## Environment setup
 
-1. Create or activate a Python environment that includes CUDA-enabled PyTorch.
+1. Create or activate a Python environment that includes CUDA-enabled PyTorch (a virtualenv, conda env, or container image all work).
 2. Install dependencies:
 
    ```bash
@@ -45,6 +49,12 @@ torchrun --nproc_per_node=4 cifar10_vgg19_distributed/train.py \
   --epochs 20
 ```
 
+For a quick local run, start with defaults:
+
+```bash
+torchrun --nproc_per_node=1 cifar10_vgg19_distributed/train.py --data-dir ./data --output-dir ./output --global-batch-size 256 --epochs 20
+```
+
 * `torchrun` automatically populates `RANK`, `LOCAL_RANK`, and `WORLD_SIZE`. The script refuses to run without them to catch accidental `python train.py` executions.
 * The **global** batch size (256 by default) is split across ranks. For example, 4 GPUs → 64 images per GPU. The learning rate follows the linear scaling rule: `actual_lr = base_lr * (global_batch / 256)`.
 * Increase `--num-workers` to match available CPU cores; 4–8 workers per GPU is a common sweet spot.
@@ -55,27 +65,25 @@ torchrun --nproc_per_node=4 cifar10_vgg19_distributed/train.py \
 
 ```bash
 #!/bin/bash
+#SBATCH --partition=lrz-dgx-a100-80x8
 #SBATCH --job-name=cifar10-vgg19
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
-#SBATCH --gpus-per-node=4
-#SBATCH --time=02:00:00
-#SBATCH --output=%x-%j.log
+#SBATCH --gres=gpu:1                  # Change manually when using more GPUs
+#SBATCH --time=01:00:00
+#SBATCH --output=log_%j.log
 
-module purge
-module load cuda
-source /path/to/venv/bin/activate
+# --- Manual settings ---
+NPROC_PER_NODE=1                      # Change manually when using more GPUs
+IMAGE="$HOME/nvidia+pytorch+23.10-py3.sqsh"
+MOUNT="$HOME/ai-systems-examples/cifar10_vgg19_distributed:/workspace"
+# -----------------------
 
-export OMP_NUM_THREADS=8
-
-torchrun --nproc_per_node=$SLURM_NTASKS_PER_NODE \
-  cifar10_vgg19_distributed/train.py \
-  --data-dir /scratch/$USER/datasets \
-  --output-dir /scratch/$USER/cifar10-vgg19 \
-  --epochs 30 \
-  --global-batch-size 512 \
-  --num-workers 8 \
-  --save-frequency 5
+srun --container-image="$IMAGE" \
+     --container-mounts="$MOUNT" \
+     torchrun --nproc_per_node=$NPROC_PER_NODE ./train.py \
+              --data-dir ./data \
+              --output-dir ./output \
+              --epochs 5 \
+              --global-batch-size 512
 ```
 
 The script uses `env://` initialization, so it is compatible with multi-node Slurm jobs when `torchrun` is invoked with `--nnodes`/`--node-rank` (or `--standalone` for single node tests).
